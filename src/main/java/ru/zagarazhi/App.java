@@ -12,10 +12,13 @@ import javafx.geometry.Pos;
 import javafx.scene.Scene;
 import javafx.scene.canvas.Canvas;
 import javafx.scene.control.Button;
+import javafx.scene.control.CheckBox;
 import javafx.scene.control.Label;
+import javafx.scene.control.RadioButton;
 import javafx.scene.control.ScrollPane;
 import javafx.scene.control.Slider;
 import javafx.scene.control.TextField;
+import javafx.scene.control.ToggleGroup;
 import javafx.scene.image.PixelWriter;
 import javafx.scene.input.MouseEvent;
 import javafx.scene.layout.BorderPane;
@@ -37,8 +40,13 @@ public class App extends Application {
     private static Scene scene; //Базовая сцена приложения
     private StringProperty path = new SimpleStringProperty("Загрузите изображение");
     private int offset = 2; //Количество бит, на которое будет сдвинута каждая пара байт
+    private int scale = 2; //Порядок увеличения изображения
+    private int areaSize = 50; //Размер исходного участка
     private int padding = 0; //Количество строк сверху, которое будет пропущено
     private short[][] pixels; //Исходные данные в формате два байта на пиксель
+    private boolean cleared = true; //Флаг очистки увеличенной области 
+    private boolean stopped = false; //Флаг остановки перемещения
+    private int stoppedX, stoppedY; //Координаты зафиксированного пикселя
 
     /**
      * Метод, превращающий двухбайтную яркость в формат INT_ARGB.
@@ -47,9 +55,17 @@ public class App extends Application {
      * @param num Исходная яркость
      * @return Цвет в формате INT_ARGB
      */
-    private int cut(short num){
+    private int cut(short num) {
         int temp = (int)((num >>> offset) & 0xFF);
         return (0xFF000000 | (temp << 16) | (temp << 8) | temp);
+    }
+
+    /**
+     * Метод очистки поля отрисовки изображения
+     * @param canvas Очищаемое поле
+     */
+    private void clear(Canvas canvas) {
+        canvas.getGraphicsContext2D().clearRect(0, 0, canvas.getWidth(), canvas.getHeight());
     }
 
     /**
@@ -63,7 +79,7 @@ public class App extends Application {
         if (mbvFile != null) {
             try {
                 pixels = MBVFileReader.read(mbvFile);
-                path.setValue(mbvFile.getAbsolutePath());
+                path.setValue(mbvFile.getName());
             } catch (SecurityException | IOException e) {
                 path.setValue("Не удалось открыть файл");
             }
@@ -92,6 +108,169 @@ public class App extends Application {
         }
     }
 
+    /**
+     * Метод отрисовки уменьшенного изображения
+     * Размер получаемого изображения зависит от размера полотна, в которое оно будет записано
+     * @param canvas Полотно, в которое будет добавлено изображение
+     */
+    private void miniRender(Canvas canvas) {
+        if(pixels != null) {
+            if(pixels.length > 0 && pixels[0].length > 0) {
+                int deltaX = (int)(pixels[0].length / canvas.getWidth());
+                int deltaY = (int)(pixels.length / canvas.getHeight());
+                PixelWriter pixelWriter = canvas.getGraphicsContext2D().getPixelWriter();
+                for(int i = padding; i < pixels.length; i += deltaY) {
+                    for(int j = 0; j < pixels[0].length; j += deltaX) {
+                        pixelWriter.setArgb(j / deltaX, (i - padding) / deltaY, cut(pixels[i][j]));
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Отрисовка увеличенного изображения методом ближайшего соседа без нормализации
+     * @param x Координата x середины увеличиваемой области
+     * @param y Координата y середины увеличиваемой области
+     * @param canvas Полотно, на котором будет отрисовано изображение
+     */
+    private void areaRenderNeighbor(int x, int y, Canvas canvas) {
+        int cornerX = x - areaSize / 2; //Координата X левого верхнего угла
+        int cornerY = y - areaSize / 2; //Координата Y левого верхнего угла 
+        int color;
+        PixelWriter pixelWriter = canvas.getGraphicsContext2D().getPixelWriter();
+        for(int i = 0; i < areaSize; i++) {
+            for(int j = 0; j < areaSize; j++) {
+                color = cut(pixels[cornerY + i + padding][cornerX + j]);
+                for(int m = 0; m < scale; m++) {
+                    for(int n = 0; n < scale; n++) {
+                        pixelWriter.setArgb(j * scale + m, i * scale + n, color);
+                    }
+                }
+            }
+        }
+        cleared = false;
+    }
+
+    /**
+     * Отрисовка увеличенного изображения методом ближайшего соседа c нормализацией
+     * @param x Координата x середины увеличиваемой области
+     * @param y Координата y середины увеличиваемой области
+     * @param canvas Полотно, на котором будет отрисовано изображение
+     */
+    private void areaRenderNeighborNormalaze(int x, int y, Canvas canvas) {
+        int cornerX = x - areaSize / 2; //Координата X левого верхнего угла
+        int cornerY = y - areaSize / 2; //Координата Y левого верхнего угла 
+        int temp;
+        int light, minLight = 255, maxLight = 0;
+        double coef = 0;
+        PixelWriter pixelWriter = canvas.getGraphicsContext2D().getPixelWriter();
+        //Определения самого яркого и самого тусклого пикселей и коффицента,
+        //который преобразует эту область в числа в диапазоне [0;255]
+        for(int i = cornerY + padding; i < cornerY + padding + areaSize; i++) {
+            for(int j = cornerX; j < cornerX + areaSize; j++) {
+                temp = pixels[i][j];
+                if(temp < minLight) minLight = temp;
+                if(temp > maxLight) maxLight = temp;
+            }
+        }
+        coef = 255.0f / (maxLight - minLight);
+        for(int i = 0; i < areaSize; i++) {
+            for(int j = 0; j < areaSize; j++) {
+                light = (int) ((pixels[cornerY + i + padding][cornerX + j] - minLight) * coef);
+                light = (0xFF000000 | (light << 16) | (light << 8) | light);
+                for(int m = 0; m < scale; m++) {
+                    for(int n = 0; n < scale; n++) {
+                        pixelWriter.setArgb(j * scale + m, i * scale + n, light);
+                    }
+                }
+            }
+        }
+        cleared = false;
+    }
+
+    /**
+     * Отрисовка увеличенного изображения методом билинейной интерполяции без нормализации
+     * @param x Координата x середины увеличиваемой области
+     * @param y Координата y середины увеличиваемой области
+     * @param canvas Полотно, на котором будет отрисовано изображение
+     */
+    private void areaRenderInterpolation(int x, int y, Canvas canvas) {
+        int cornerX = x - areaSize / 2; //Координата X левого верхнего угла
+        int cornerY = y - areaSize / 2; //Координата Y левого верхнего угла 
+        int a, b, c, d;
+        int color;
+        PixelWriter pixelWriter = canvas.getGraphicsContext2D().getPixelWriter();
+        for(int i = 0; i < areaSize; i++) {
+            for(int j = 0; j < areaSize; j++) {
+                d = pixels[cornerY + i + padding][cornerX + j];
+                a = pixels[cornerY + i + padding][cornerX + j + 1] - d;
+                b = pixels[cornerY + i + padding + 1][cornerX + j] - d;
+                c = pixels[cornerY + i + padding + 1][cornerX + j + 1] - a - b - d;
+                for(int m = 0; m < scale; m++) {
+                    for(int n = 0; n < scale; n++) {
+                        color = cut((short)((
+                            (a * (double)n / scale)
+                            + (b * (double)m / scale)
+                            + (c * (double)n / scale * (double)m / scale)
+                            + d)));
+                        pixelWriter.setArgb(j * scale + n, i * scale + m, color);
+                    }
+                }
+            }
+        }
+        cleared = false;
+    }
+
+    /**
+     * Отрисовка увеличенного изображения методом билинейной интерполяции с нормализацией
+     * @param x Координата x середины увеличиваемой области
+     * @param y Координата y середины увеличиваемой области
+     * @param canvas Полотно, на котором будет отрисовано изображение
+     */
+    private void areaRenderInterpolationNormalize(int x, int y, Canvas canvas) {
+        int cornerX = x - areaSize / 2; //Координата X левого верхнего угла
+        int cornerY = y - areaSize / 2; //Координата Y левого верхнего угла 
+        int a, b, c, d;
+        int light;
+        int temp, minLight = 255, maxLight = 0;
+        double coef = 0;
+        PixelWriter pixelWriter = canvas.getGraphicsContext2D().getPixelWriter();
+        //Определения самого яркого и самого тусклого пикселей и коффицента,
+        //который преобразует эту область в числа в диапазоне [0;255]
+        for(int i = cornerY + padding; i < cornerY + padding + areaSize; i++) {
+            for(int j = cornerX; j < cornerX + areaSize; j++) {
+                temp = pixels[i][j];
+                if(temp < minLight) minLight = temp;
+                if(temp > maxLight) maxLight = temp;
+            }
+        }
+        coef = 255.0f / (maxLight - minLight);
+        for(int i = 0; i < areaSize; i++) {
+            for(int j = 0; j < areaSize; j++) {
+                d = pixels[cornerY + i + padding][cornerX + j];
+                a = pixels[cornerY + i + padding][cornerX + j + 1] - d;
+                b = pixels[cornerY + i + padding + 1][cornerX + j] - d;
+                c = pixels[cornerY + i + padding + 1][cornerX + j + 1] - a - b - d;
+                for(int m = 0; m < scale; m++) {
+                    for(int n = 0; n < scale; n++) {
+                        light = (int)(((
+                            (a * (double)n / scale)
+                            + (b * (double)m / scale)
+                            + (c * (double)n / scale * (double)m / scale)
+                            + d) - minLight) * coef);
+                        //
+                        if(light < 0) light = 0;
+                        if(light > 255) light = 255;
+                        light = (0xFF000000 | (light << 16) | (light << 8) | light);
+                        pixelWriter.setArgb(j * scale + n, i * scale + m, light);
+                    }
+                }
+            }
+        }
+        cleared = false;
+    }
+
     @Override
     public void start(Stage stage) throws IOException {
         //Базовая разметка
@@ -105,6 +284,12 @@ public class App extends Application {
         VBox info = new VBox();
         VBox canvasBox = new VBox();
         VBox imageInfo = new VBox();
+        VBox multiplierSliderBox = new VBox();
+        VBox multiplierControls = new VBox();
+        VBox multiplierCanvasBox = new VBox();
+        VBox miniCanvasBox = new VBox();
+        VBox areaSizeControls = new VBox();
+        HBox main = new HBox();
 
         //Элементы загрузки файла
         Button loadButton = new Button("Загрузить файл");
@@ -131,8 +316,26 @@ public class App extends Application {
         Label imageWidth = new Label();
 
         //Полотно и полоса прокрутки для нее
-        Canvas canvas = new Canvas(500.0f, 100.0f);
+        Canvas canvas = new Canvas(500.0f, 500.0f);
         ScrollPane scrollPane = new ScrollPane(canvas);
+
+        //Полотно для обзорного изображения
+        Canvas miniCanvas = new Canvas(100.0f, 600.0f);
+
+        //Полотно для увеличенного изображения
+        Canvas multiplierCanvas = new Canvas(500.0f, 500.0f);
+
+        //Элементы для настройки увеличения
+        Label multiplierInfo = new Label("Степень увеличения: ");
+        Label multiplierInfoLabel = new Label("Увеличение: 2");
+        Label areaSizeInfoLabel = new Label("Размер поля: ");
+        Label areaSizeLabel = new Label("Размер области: 50");
+        Slider multiplierSlider = new Slider(2, 5, 2);
+        Slider areaSizeSlider = new Slider(10, 100, 50);
+        ToggleGroup multiplierGroup = new ToggleGroup();
+        RadioButton neighbor = new RadioButton("Метод ближайшего соседа");
+        RadioButton interpolation = new RadioButton("Метод билинейной интерполяции");
+        CheckBox normalaze = new CheckBox("Нормировать яркость");
 
         //Обработчик события с изменением значения слайдера.
         //При этом изображение перерисовывается.
@@ -144,6 +347,24 @@ public class App extends Application {
                     offset = newValue;
                     offsetLabel.setText("Сдвиг: " + offset);
                     render(canvas);
+                    clear(miniCanvas);
+                    miniRender(miniCanvas);
+                }
+            }
+        });
+
+        //Обработчик события изменения слайдера
+        //При это меняется увеличение изображения
+        multiplierSlider.valueProperty().addListener(new ChangeListener<Number>() {
+            @Override
+            public void changed(ObservableValue<? extends Number> number, Number oldValue, Number newValue) {
+                if(scale != newValue.intValue()) {
+                    multiplierInfoLabel.setText("Увеличение: " + newValue.intValue());
+                    scale = newValue.intValue();
+                    if(!cleared) {
+                        clear(multiplierCanvas);
+                        cleared = true;
+                    }
                 }
             }
         });
@@ -162,6 +383,8 @@ public class App extends Application {
                     }
                 }
                 render(canvas);
+                clear(miniCanvas);
+                miniRender(miniCanvas);
             }
         });
 
@@ -172,9 +395,11 @@ public class App extends Application {
                 public void handle(ActionEvent actionEvent) {
                     fileImageBtnPressed();
                     render(canvas);
+                    miniRender(miniCanvas);
                     if(pixels != null) {
                         if(pixels.length > 0 && pixels[0].length > 0) {
-                            imageInfoLabel.setText("Информация об изображении");
+                            imageInfoLabel.setText("Информация об изображении: ");
+                            infoText.setText("Координаты курсора: ");
                             imageHeight.setText("Высота: " + (pixels.length - padding));
                             imageWidth.setText("Ширина: " + pixels[0].length);
                         }
@@ -190,17 +415,73 @@ public class App extends Application {
             @Override
             public void handle(MouseEvent event) {
                 if(pixels != null) {
-                    int x = (int)event.getX();
-                    int y = (int)event.getY();
-                    infoText.setText("Координаты курсора");
+                    int x = stopped ? stoppedX : (int)event.getX();
+                    int y = stopped ? stoppedY : (int)event.getY();
                     xInfo.setText("X: " + x);
                     yInfo.setText("Y :" + (y + padding));
                     lightInfo.setText("Яркость: " + pixels[y + padding][x]);
+                    if(x > areaSize / 2 && y > areaSize / 2 && x < (canvas.getWidth() - areaSize / 2) && y < (canvas.getHeight() - areaSize /2)) {
+                        if(neighbor.isSelected()) {
+                            if(normalaze.isSelected()) {
+                                areaRenderNeighborNormalaze(x, y, multiplierCanvas);
+                            } else {
+                                areaRenderNeighbor(x, y, multiplierCanvas);
+                            }
+                        } else if(interpolation.isSelected()) {
+                            if(normalaze.isSelected()) {
+                                areaRenderInterpolationNormalize(x, y, multiplierCanvas);
+                            } else {
+                                areaRenderInterpolation(x, y, multiplierCanvas);
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
+        //Обработчик нажатий по обзорному изображению
+        miniCanvas.setOnMouseClicked(new EventHandler<MouseEvent>() {
+            @Override
+            public void handle(MouseEvent event) {
+                if(pixels != null) {
+                    scrollPane.setVvalue(event.getY() / miniCanvas.getHeight());
+                }
+            }
+        });
+
+        //Задержка выбранной области
+        canvas.setOnMouseClicked(new EventHandler<MouseEvent>() {
+            @Override
+            public void handle(MouseEvent event) {
+                stopped = !stopped;
+                stoppedX = (int)event.getX();
+                stoppedY = (int)event.getY();
+            }
+        });
+
+        //Обработчик события изменения слайдера
+        //При это меняется размер увеличиваемой области
+        areaSizeSlider.valueProperty().addListener(new ChangeListener<Number>() {
+            @Override
+            public void changed(ObservableValue<? extends Number> number, Number oldValue, Number newValue) {
+                if(areaSize != newValue.intValue()) {
+                    areaSizeLabel.setText("Размер области: " + newValue.intValue());
+                    areaSize = newValue.intValue();
+                    if(!cleared) {
+                        clear(multiplierCanvas);
+                        cleared = true;
+                    }
                 }
             }
         });
 
         //Блок размещения элементов на сцене
+        imageInfoLabel.setMinWidth(180);
+
+        neighbor.setToggleGroup(multiplierGroup);
+        neighbor.setSelected(true);
+        interpolation.setToggleGroup(multiplierGroup);
+
         canvasBox.getChildren().add(scrollPane);
         VBox.setVgrow(scrollPane, Priority.ALWAYS);
         loadText.textProperty().bind(path);
@@ -208,6 +489,32 @@ public class App extends Application {
         canvasBox.setPadding(new Insets(10, 10, 10, 10));
         canvasBox.setAlignment(Pos.BASELINE_CENTER);
         canvasBox.setSpacing(10);
+        canvasBox.setMinWidth(550);
+
+        multiplierSliderBox.setPadding(new Insets(10, 10, 10, 10));
+        multiplierSliderBox.setAlignment(Pos.BASELINE_CENTER);
+        multiplierSliderBox.setSpacing(10);
+        multiplierSliderBox.getChildren().addAll(multiplierInfo, multiplierSlider, multiplierInfoLabel);
+
+        areaSizeControls.setPadding(new Insets(10, 10, 10, 10));
+        areaSizeControls.setAlignment(Pos.BASELINE_CENTER);
+        areaSizeControls.setSpacing(10);
+        areaSizeControls.getChildren().addAll(areaSizeInfoLabel, areaSizeSlider, areaSizeLabel);
+
+        multiplierControls.setPadding(new Insets(10, 10, 10, 10));
+        multiplierControls.setAlignment(Pos.BASELINE_CENTER);
+        multiplierControls.setSpacing(10);
+        multiplierControls.getChildren().addAll(neighbor, interpolation, normalaze);
+
+        multiplierCanvasBox.setPadding(new Insets(10, 10, 10, 10));
+        multiplierCanvasBox.setAlignment(Pos.BASELINE_CENTER);
+        multiplierCanvasBox.setSpacing(10);
+        multiplierCanvasBox.getChildren().addAll(multiplierCanvas);
+
+        miniCanvasBox.setPadding(new Insets(10, 10, 10, 10));
+        miniCanvasBox.setAlignment(Pos.BASELINE_CENTER);
+        miniCanvasBox.setSpacing(10);
+        miniCanvasBox.getChildren().addAll(miniCanvas);
 
         imageInfo.setPadding(new Insets(10, 10, 10, 10));
         imageInfo.setAlignment(Pos.BASELINE_CENTER);
@@ -235,14 +542,17 @@ public class App extends Application {
         loadControls.getChildren().addAll(loadButton, loadText);
 
         controls.setAlignment(Pos.TOP_CENTER);
-        controls.getChildren().addAll(loadControls, offsetControls, paddingControls);
+        controls.getChildren().addAll(loadControls, offsetControls, paddingControls, areaSizeControls, multiplierSliderBox, multiplierControls);
+
+        main.getChildren().addAll(miniCanvasBox, canvasBox);
 
         border.setTop(controls);
         border.setLeft(imageInfo);
-        border.setCenter(canvasBox);
+        border.setCenter(main);
+        border.setRight(multiplierCanvasBox);
 
         //Настройка и отображение сцены
-        scene = new Scene(border, 800, 1000);
+        scene = new Scene(border, 1500, 1000);
         stage.setScene(scene);
         stage.setTitle("Базовый обозреватель");
         stage.show();
