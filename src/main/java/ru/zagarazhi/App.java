@@ -8,9 +8,15 @@ import javafx.beans.value.ObservableValue;
 import javafx.event.ActionEvent;
 import javafx.event.EventHandler;
 import javafx.geometry.Insets;
+import javafx.geometry.Orientation;
 import javafx.geometry.Pos;
 import javafx.scene.Scene;
 import javafx.scene.canvas.Canvas;
+import javafx.scene.chart.BarChart;
+import javafx.scene.chart.CategoryAxis;
+import javafx.scene.chart.NumberAxis;
+import javafx.scene.chart.ValueAxis;
+import javafx.scene.chart.XYChart;
 import javafx.scene.control.Button;
 import javafx.scene.control.CheckBox;
 import javafx.scene.control.Label;
@@ -18,19 +24,25 @@ import javafx.scene.control.RadioButton;
 import javafx.scene.control.ScrollPane;
 import javafx.scene.control.Slider;
 import javafx.scene.control.TextField;
+import javafx.scene.control.ToggleButton;
 import javafx.scene.control.ToggleGroup;
 import javafx.scene.image.PixelWriter;
 import javafx.scene.input.MouseEvent;
 import javafx.scene.layout.BorderPane;
 import javafx.scene.layout.HBox;
+import javafx.scene.layout.Pane;
 import javafx.scene.layout.Priority;
 import javafx.scene.layout.VBox;
+import javafx.scene.shape.Line;
 import javafx.scene.text.Text;
 import javafx.stage.FileChooser;
 import javafx.stage.Stage;
 
 import java.io.File;
 import java.io.IOException;
+
+import org.controlsfx.control.RangeSlider;
+import org.controlsfx.control.SegmentedButton;
 
 /**
  * Класс оконного приложения
@@ -47,6 +59,8 @@ public class App extends Application {
     private boolean cleared = true; //Флаг очистки увеличенной области 
     private boolean stopped = false; //Флаг остановки перемещения
     private int stoppedX, stoppedY; //Координаты зафиксированного пикселя
+    private BarChart<String, Number> vHistogram; //Вертикальная гистограмма
+    private BarChart<Number, String> hHistogram; //Горизонтальная гистограмма
 
     /**
      * Метод, превращающий двухбайтную яркость в формат INT_ARGB.
@@ -102,6 +116,42 @@ public class App extends Application {
                 for(int i = padding; i < pixels.length; i++) {
                     for(int j = 0; j < pixels[0].length; j++) {
                         pixelWriter.setArgb(j, i - padding, cut(pixels[i][j]));
+                    }
+                }
+            }
+        }
+    }
+
+    private void render(Canvas canvas, 
+                        boolean fullLight, 
+                        boolean rightMax, 
+                        boolean leftMax,
+                        boolean rightMin, 
+                        boolean leftMin, 
+                        int left, 
+                        int right, 
+                        int top, 
+                        int bottom, 
+                        int lowFill, 
+                        int highFill) {
+        double coef = 1023.0 / (highFill - lowFill);
+        short temp = 0;
+        if(pixels != null) {
+            if(pixels.length > 0 && pixels[0].length > 0) {
+                PixelWriter pixelWriter = canvas.getGraphicsContext2D().getPixelWriter();
+                for(int i = top; i < bottom; i++) {
+                    for(int j = left; j < right; j++) {
+                        if(fullLight) {
+                            pixelWriter.setArgb(j, i, (cut((short)(((pixels[i][j] * coef) + lowFill)))));
+                        } else {
+                            temp = pixels[i][j];
+                            if(temp > highFill) {
+                                temp = rightMax ? 255 : rightMin ? 0 : (short)highFill;
+                            } else if(temp < lowFill){
+                                temp = leftMax ? 255 : leftMin ? 0 : (short)lowFill;
+                            }
+                            pixelWriter.setArgb(j, i, (cut(temp)));
+                        }
                     }
                 }
             }
@@ -271,6 +321,114 @@ public class App extends Application {
         cleared = false;
     }
 
+    /**
+     * Метод, создающий вертикальную гистограмму
+     * @param isLog Нужно ли делать количество пикселей логарифмической шкалой
+     */
+    private void createVHistogram(boolean isLog, boolean fullSize){
+        int[] pixelsCountByLight = new int[fullSize ? 1024 : 256];
+        for(int i = padding; i < pixels.length; i++) {
+            for(int j = 0; j < pixels[0].length; j++) {
+                if(fullSize) {
+                    pixelsCountByLight[pixels[i][j]]++;
+                } else {
+                    pixelsCountByLight[(pixels[i][j] >>> offset) & 0xFF]++;
+                }
+            }
+        }
+        int min = pixels.length * pixels[0].length;
+        int max = 0;
+        XYChart.Series<String, Number> series = new XYChart.Series<>();
+        int temp = 0;
+        if(fullSize) {
+            for(int i = 0; i < pixelsCountByLight.length; i+=4) {
+                if(pixelsCountByLight[i] < min) min = pixelsCountByLight[i];
+                if(pixelsCountByLight[i] > max) max = pixelsCountByLight[i];
+                for(int j = 0; j < 4; j++) {
+                    temp += pixelsCountByLight[i];
+                }
+                series.getData().add(new XYChart.Data<String, Number>("" + i, temp));
+                temp = 0;
+            }
+        } else {
+            for(int i = 0; i < pixelsCountByLight.length; i++) {
+                if(pixelsCountByLight[i] < min) min = pixelsCountByLight[i];
+                if(pixelsCountByLight[i] > max) max = pixelsCountByLight[i];
+                series.getData().add(new XYChart.Data<String, Number>("" + i, pixelsCountByLight[i]));
+            }
+        }
+        final CategoryAxis xAxis = new CategoryAxis();
+        final ValueAxis<Number> yAxis = isLog ? new LogarithmicAxis(min + 1, fullSize ? max * 4 : max) : new NumberAxis();
+        final BarChart<String, Number> histogram = new BarChart<>(xAxis, yAxis);
+        histogram.setLegendVisible(false);
+        histogram.setAnimated(false);
+        histogram.setTitle("Количество пикселей");
+        histogram.setMinHeight(500);
+        histogram.setMinWidth(800);
+        histogram.setBarGap(0);
+        histogram.setCategoryGap(0);
+        histogram.setVerticalGridLinesVisible(false);
+        histogram.setHorizontalGridLinesVisible(false);
+        xAxis.setLabel("Яркости");
+        yAxis.setLabel("Количество");
+        histogram.getData().add(series);
+        vHistogram = histogram;
+    }
+
+    /**
+     * Метод, создающий горизонтальную гистограмму
+     * @param isLog Нужно ли делать количество пикселей логарифмической шкалой
+     */
+    private void createHHistogram(boolean isLog, boolean fullSize){
+        int[] pixelsCountByLight = new int[fullSize ? 1024 : 256];
+        for(int i = padding; i < pixels.length; i++) {
+            for(int j = 0; j < pixels[0].length; j++) {
+                if(fullSize) {
+                    pixelsCountByLight[pixels[i][j]]++;
+                } else {
+                    pixelsCountByLight[(pixels[i][j] >>> offset) & 0xFF]++;
+                }
+            }
+        }
+        int min = pixels.length * pixels[0].length;
+        int max = 0;
+        XYChart.Series<Number, String> series = new XYChart.Series<>();
+        int temp = 0;
+        if(fullSize) {
+            for(int i = 0; i < pixelsCountByLight.length; i+=4) {
+                if(pixelsCountByLight[i] < min) min = pixelsCountByLight[i];
+                if(pixelsCountByLight[i] > max) max = pixelsCountByLight[i];
+                for(int j = 0; j < 4; j++) {
+                    temp += pixelsCountByLight[i];
+                }
+                series.getData().add(new XYChart.Data<Number, String>(temp, "" + i));
+                temp = 0;
+            }
+        } else {
+            for(int i = 0; i < pixelsCountByLight.length; i++) {
+                if(pixelsCountByLight[i] < min) min = pixelsCountByLight[i];
+                if(pixelsCountByLight[i] > max) max = pixelsCountByLight[i];
+                series.getData().add(new XYChart.Data<Number, String>(pixelsCountByLight[i], "" + i));
+            }
+        }
+        final CategoryAxis xAxis = new CategoryAxis();
+        final ValueAxis<Number> yAxis = isLog ? new LogarithmicAxis(min + 1, fullSize ? max * 4 : max) : new NumberAxis();
+        final BarChart<Number, String> histogram = new BarChart<>(yAxis, xAxis);
+        histogram.setLegendVisible(false);
+        histogram.setAnimated(false);
+        histogram.setTitle("Количество пикселей");
+        histogram.setMinHeight(600);
+        histogram.setMinWidth(400);
+        histogram.setBarGap(0);
+        histogram.setCategoryGap(0);
+        histogram.setVerticalGridLinesVisible(false);
+        histogram.setHorizontalGridLinesVisible(false);
+        xAxis.setLabel("Яркости");
+        yAxis.setLabel("Количество");
+        histogram.getData().add(series);
+        hHistogram = histogram;
+    }
+
     @Override
     public void start(Stage stage) throws IOException {
         //Базовая разметка
@@ -287,8 +445,16 @@ public class App extends Application {
         VBox multiplierSliderBox = new VBox();
         VBox multiplierControls = new VBox();
         VBox multiplierCanvasBox = new VBox();
+        VBox histogramBox = new VBox();
+        VBox onlyHistogramControlsBox = new VBox();
+        HBox rightControlsBox = new HBox();
+        VBox rightBox = new VBox();
         VBox miniCanvasBox = new VBox();
         VBox areaSizeControls = new VBox();
+        VBox barChartBox = new VBox();
+        HBox modsControls = new HBox();
+        HBox sliderHBox = new HBox();
+        HBox histogramControlsBox = new HBox();
         HBox main = new HBox();
 
         //Элементы загрузки файла
@@ -317,7 +483,8 @@ public class App extends Application {
 
         //Полотно и полоса прокрутки для нее
         Canvas canvas = new Canvas(500.0f, 500.0f);
-        ScrollPane scrollPane = new ScrollPane(canvas);
+        ScrollPane scrollPane = new ScrollPane(sliderHBox);
+        scrollPane.setMinWidth(600);
 
         //Полотно для обзорного изображения
         Canvas miniCanvas = new Canvas(100.0f, 600.0f);
@@ -337,6 +504,212 @@ public class App extends Application {
         RadioButton interpolation = new RadioButton("Метод билинейной интерполяции");
         CheckBox normalaze = new CheckBox("Нормировать яркость");
 
+        //Элементы для выбора дополнительных возможностей приложения
+        ToggleButton multiplierSelect = new ToggleButton("Увеличение");
+        ToggleButton histogramSelect = new ToggleButton("Гистрограмма");
+        SegmentedButton mods = new SegmentedButton(multiplierSelect, histogramSelect);
+        histogramSelect.setSelected(true);
+
+        //Элементы для работы с гистрограммой
+        Pane pane = new Pane();
+        Line leftLine = new Line();
+        Line rightLine = new Line();
+        Line topLine = new Line();
+        Line bottomLine = new Line();
+        RangeSlider lightSlider = new RangeSlider(0, 1023, 0, 1023);
+        RangeSlider widthSlider = new RangeSlider(0, 500, 0, 500);
+        RangeSlider heighSlider = new RangeSlider(0, 3000, 0, 3000);
+        Label rightBorder = new Label("Максимум: 1023");
+        Label leftBorder = new Label("Минимум: 0");
+        RadioButton horizonal = new RadioButton("Горизонтальное представление");
+        RadioButton log = new RadioButton("Логарифмическая шкала");
+        RadioButton LRtoAllLight = new RadioButton("преобразовать в диапазон [0;255]");
+        RadioButton fullSizeRB = new RadioButton("0...1023");
+        ToggleButton toZeroLeft = new ToggleButton("Ниже -> 0");
+        ToggleButton toMaxLeft = new ToggleButton("Ниже -> 255");
+        ToggleButton toNumLeft = new ToggleButton("Ниже -> граница");
+        SegmentedButton leftRender = new SegmentedButton(toZeroLeft, toMaxLeft, toNumLeft);
+        ToggleButton toZeroRight = new ToggleButton("Выше -> 0");
+        ToggleButton toMaxRight = new ToggleButton("Выше -> 255");
+        ToggleButton toNumRight = new ToggleButton("Выше -> граница");
+        SegmentedButton rightRender = new SegmentedButton(toZeroRight, toMaxRight, toNumRight);
+        Button redrawButton = new Button("Перерисовать");
+        log.setSelected(true);
+        fullSizeRB.setSelected(true);
+        LRtoAllLight.setSelected(true);
+        lightSlider.setShowTickMarks(true);
+        lightSlider.setBlockIncrement(1);
+        lightSlider.setMinWidth(710);
+        lightSlider.setMaxWidth(710);
+
+        heighSlider.setOrientation(Orientation.VERTICAL);
+        heighSlider.setShowTickMarks(true);
+        heighSlider.setVisible(false);
+
+        widthSlider.setShowTickMarks(true);
+        widthSlider.setMaxWidth(500);
+        widthSlider.setVisible(false);
+
+        leftLine.toFront();
+        leftLine.setStartY(33);
+        leftLine.setEndY(433);
+        leftLine.setStartX(79);
+        leftLine.setEndX(79);
+        leftLine.setVisible(false);
+
+        rightLine.toFront();
+        rightLine.setStartY(33);
+        rightLine.setEndY(433);
+        rightLine.setStartX(779);
+        rightLine.setEndX(779);
+        rightLine.setVisible(false);
+
+        bottomLine.toFront();
+        bottomLine.setStartY(535);
+        bottomLine.setEndY(535);
+        bottomLine.setStartX(70);
+        bottomLine.setEndX(433);
+
+        topLine.toFront();
+        topLine.setStartY(45);
+        topLine.setEndY(45);
+        topLine.setStartX(70);
+        topLine.setEndX(433);
+
+        //Обработчик изменения типа гистограммы
+        log.setOnAction(new EventHandler<ActionEvent>() {
+            @Override
+            public void handle(ActionEvent arg0) {
+                pane.getChildren().clear();
+                boolean isActivate = horizonal.isSelected();
+                if(isActivate) {
+                    createHHistogram(log.isSelected(), fullSizeRB.isSelected());
+                    pane.getChildren().addAll(topLine, bottomLine, hHistogram);
+                    topLine.toFront();
+                    bottomLine.toFront();
+                } else{ 
+                    createVHistogram(log.isSelected(), fullSizeRB.isSelected());
+                    pane.getChildren().addAll(leftLine, rightLine, vHistogram);
+                    leftLine.toFront();
+                    rightLine.toFront();
+                }
+            }
+        });
+        
+        //Обработчик изменения типа гистограммы
+        horizonal.setOnAction(new EventHandler<ActionEvent>() {
+            @Override
+            public void handle(ActionEvent event) {
+                pane.getChildren().clear();
+                boolean isActivate = horizonal.isSelected();
+                if(isActivate) {
+                    createHHistogram(log.isSelected(), fullSizeRB.isSelected());
+                    pane.getChildren().addAll(topLine, bottomLine, hHistogram);
+                    topLine.toFront();
+                    bottomLine.toFront();
+                } else{ 
+                    createVHistogram(log.isSelected(), fullSizeRB.isSelected());
+                    pane.getChildren().addAll(leftLine, rightLine, vHistogram);
+                    leftLine.toFront();
+                    rightLine.toFront();
+                }
+                topLine.setVisible(isActivate);
+                bottomLine.setVisible(isActivate);
+                leftLine.setVisible(!isActivate);
+                rightLine.setVisible(!isActivate);
+            }
+        });
+
+        //Обработчик изменения типа гистограммы
+        fullSizeRB.setOnAction(new EventHandler<ActionEvent>() {
+            @Override
+            public void handle(ActionEvent arg0) {
+                pane.getChildren().clear();
+                boolean isActivate = horizonal.isSelected();
+                if(isActivate) {
+                    createHHistogram(log.isSelected(), fullSizeRB.isSelected());
+                    pane.getChildren().addAll(topLine, bottomLine, hHistogram);
+                    topLine.toFront();
+                    bottomLine.toFront();
+                } else{ 
+                    createVHistogram(log.isSelected(), fullSizeRB.isSelected());
+                    pane.getChildren().addAll(leftLine, rightLine, vHistogram);
+                    leftLine.toFront();
+                    rightLine.toFront();
+                }
+            }
+        });
+
+        //Обработчик изменения границ гистограммы
+        lightSlider.lowValueProperty().addListener(new ChangeListener<Number>(){
+            @Override
+            public void changed(ObservableValue<? extends Number> number, Number oldValue, Number newValue) {
+                leftBorder.setText("Минимум: " + (fullSizeRB.isSelected() ? newValue.intValue() : (newValue.intValue() / 4)));
+                if(horizonal.isSelected()){
+                    double temp = 535 - newValue.doubleValue() * 490 / 1024;
+                    bottomLine.setStartY(temp);
+                    bottomLine.setEndY(temp);
+                } else {
+                    double temp = newValue.doubleValue() * 700 / 1024 + 79;
+                    leftLine.setStartX(temp);
+                    leftLine.setEndX(temp);
+                }
+            }
+        });
+        lightSlider.highValueProperty().addListener(new ChangeListener<Number>(){
+            @Override
+            public void changed(ObservableValue<? extends Number> number, Number oldValue, Number newValue) {
+                rightBorder.setText("Максимум: " + (fullSizeRB.isSelected() ? newValue.intValue() : (newValue.intValue() / 4)));
+                if(horizonal.isSelected()){
+                    double temp = 535 - newValue.doubleValue() * 490 / 1024;
+                    topLine.setStartY(temp);
+                    topLine.setEndY(temp);
+                } else {
+                    double temp = newValue.doubleValue() * 700 / 1024 + 79;
+                    rightLine.setStartX(temp);
+                    rightLine.setEndX(temp);
+                }
+            }
+        });
+
+        redrawButton.setOnAction(new EventHandler<ActionEvent>() {
+            @Override
+            public void handle(ActionEvent arg0) {
+                render(canvas, 
+                        LRtoAllLight.isSelected(), 
+                        toMaxRight.isSelected(),
+                        toMaxLeft.isSelected(),
+                        toZeroRight.isSelected(),
+                        toZeroRight.isSelected(),
+                        (int)widthSlider.getLowValue(), 
+                        (int)widthSlider.getHighValue(), 
+                        3000 - (int)heighSlider.getHighValue(), 
+                        3000 - (int)heighSlider.getLowValue(),  
+                        (int)lightSlider.getLowValue(),
+                        (int)lightSlider.getHighValue());
+            }
+        });
+
+        //Обработчик события переключения дополнительных возможностей
+        multiplierSelect.setOnAction(new EventHandler<ActionEvent>() {
+            public void handle(ActionEvent event) {
+                histogramBox.setVisible(false);
+                multiplierCanvasBox.setVisible(true);
+                heighSlider.setVisible(false);
+                widthSlider.setVisible(false);
+            }
+        });
+
+         //Обработчик события переключения дополнительных возможностей
+         histogramSelect.setOnAction(new EventHandler<ActionEvent>() {
+            public void handle(ActionEvent event) {
+                multiplierCanvasBox.setVisible(false);
+                histogramBox.setVisible(true);
+                heighSlider.setVisible(true);
+                widthSlider.setVisible(true);
+            }
+        });
+
         //Обработчик события с изменением значения слайдера.
         //При этом изображение перерисовывается.
         slider.setOnMouseReleased(new EventHandler<MouseEvent>() {
@@ -349,6 +722,19 @@ public class App extends Application {
                     render(canvas);
                     clear(miniCanvas);
                     miniRender(miniCanvas);
+                    pane.getChildren().clear();
+                    boolean isActivate = horizonal.isSelected();
+                    if(isActivate) {
+                        createHHistogram(log.isSelected(), fullSizeRB.isSelected());
+                        pane.getChildren().addAll(topLine, bottomLine, hHistogram);
+                        topLine.toFront();
+                        bottomLine.toFront();
+                    } else{ 
+                        createVHistogram(log.isSelected(), fullSizeRB.isSelected());
+                        pane.getChildren().addAll(leftLine, rightLine, vHistogram);
+                        leftLine.toFront();
+                        rightLine.toFront();
+                    }
                 }
             }
         });
@@ -380,6 +766,7 @@ public class App extends Application {
                 if(pixels != null) {
                     if(pixels.length > 0) {
                         imageHeight.setText("Высота: " + (pixels.length - padding));
+                        heighSlider.setMaxHeight(3000 - padding);
                     }
                 }
                 render(canvas);
@@ -402,6 +789,22 @@ public class App extends Application {
                             infoText.setText("Координаты курсора: ");
                             imageHeight.setText("Высота: " + (pixels.length - padding));
                             imageWidth.setText("Ширина: " + pixels[0].length);
+                            heighSlider.setVisible(true);
+                            widthSlider.setVisible(true);
+                            onlyHistogramControlsBox.setVisible(true);
+                            if(horizonal.isSelected()){
+                                createHHistogram(log.isSelected(), fullSizeRB.isSelected());
+                                pane.getChildren().clear();
+                                pane.getChildren().addAll(hHistogram, topLine, bottomLine);
+                                topLine.setVisible(true);
+                                bottomLine.setVisible(true);
+                            } else {
+                                createVHistogram(log.isSelected(), fullSizeRB.isSelected());
+                                pane.getChildren().clear();
+                                pane.getChildren().addAll(vHistogram, leftLine, rightLine);
+                                leftLine.setVisible(true);
+                                rightLine.setVisible(true);
+                            }
                         }
                     }
                 }
@@ -420,7 +823,7 @@ public class App extends Application {
                     xInfo.setText("X: " + x);
                     yInfo.setText("Y :" + (y + padding));
                     lightInfo.setText("Яркость: " + pixels[y + padding][x]);
-                    if(x > areaSize / 2 && y > areaSize / 2 && x < (canvas.getWidth() - areaSize / 2) && y < (canvas.getHeight() - areaSize /2)) {
+                    if(x > areaSize / 2 && y > areaSize / 2 && x < (canvas.getWidth() - areaSize / 2) && y < (canvas.getHeight() - areaSize /2) && multiplierSelect.isSelected()) {
                         if(neighbor.isSelected()) {
                             if(normalaze.isSelected()) {
                                 areaRenderNeighborNormalaze(x, y, multiplierCanvas);
@@ -478,16 +881,18 @@ public class App extends Application {
         //Блок размещения элементов на сцене
         imageInfoLabel.setMinWidth(180);
 
+        sliderHBox.getChildren().addAll(canvas, heighSlider);
+
         neighbor.setToggleGroup(multiplierGroup);
         neighbor.setSelected(true);
         interpolation.setToggleGroup(multiplierGroup);
 
-        canvasBox.getChildren().add(scrollPane);
+        canvasBox.getChildren().addAll(scrollPane, widthSlider);
         VBox.setVgrow(scrollPane, Priority.ALWAYS);
         loadText.textProperty().bind(path);
 
         canvasBox.setPadding(new Insets(10, 10, 10, 10));
-        canvasBox.setAlignment(Pos.BASELINE_CENTER);
+        canvasBox.setAlignment(Pos.TOP_LEFT);
         canvasBox.setSpacing(10);
         canvasBox.setMinWidth(550);
 
@@ -506,10 +911,52 @@ public class App extends Application {
         multiplierControls.setSpacing(10);
         multiplierControls.getChildren().addAll(neighbor, interpolation, normalaze);
 
+        rightControlsBox.setPadding(new Insets(10, 10, 10, 10));
+        rightControlsBox.setAlignment(Pos.BASELINE_CENTER);
+        rightControlsBox.setSpacing(10);
+        rightControlsBox.getChildren().addAll(areaSizeControls, multiplierSliderBox, multiplierControls);
+
+        onlyHistogramControlsBox.setPadding(new Insets(10, 10, 10, 10));
+        onlyHistogramControlsBox.setAlignment(Pos.BASELINE_RIGHT);
+        onlyHistogramControlsBox.setSpacing(10);
+        onlyHistogramControlsBox.getChildren().addAll(lightSlider, leftBorder, rightBorder, horizonal, log, fullSizeRB, LRtoAllLight, leftRender, rightRender, redrawButton);
+        onlyHistogramControlsBox.managedProperty().bind(onlyHistogramControlsBox.visibleProperty());
+        onlyHistogramControlsBox.setVisible(false);
+
         multiplierCanvasBox.setPadding(new Insets(10, 10, 10, 10));
         multiplierCanvasBox.setAlignment(Pos.BASELINE_CENTER);
         multiplierCanvasBox.setSpacing(10);
-        multiplierCanvasBox.getChildren().addAll(multiplierCanvas);
+        multiplierCanvasBox.getChildren().addAll(multiplierCanvas, rightControlsBox);
+        multiplierCanvasBox.managedProperty().bind(multiplierCanvasBox.visibleProperty());
+        multiplierCanvasBox.setVisible(false);
+
+        pane.getChildren().addAll(leftLine, rightLine);
+
+        barChartBox.setPadding(new Insets(10, 10, 10, 10));
+        barChartBox.setAlignment(Pos.TOP_CENTER);
+        barChartBox.getChildren().addAll(pane);
+        barChartBox.setSpacing(10);
+
+        histogramControlsBox.setPadding(new Insets(10, 10, 10, 10));
+        histogramControlsBox.setAlignment(Pos.TOP_CENTER);
+        histogramControlsBox.setSpacing(10);
+        histogramControlsBox.getChildren().addAll(onlyHistogramControlsBox);
+
+        histogramBox.setPadding(new Insets(10, 10, 10, 10));
+        histogramBox.setAlignment(Pos.TOP_CENTER);
+        histogramBox.setSpacing(10);
+        histogramBox.getChildren().addAll(barChartBox, histogramControlsBox);
+        histogramBox.managedProperty().bind(histogramBox.visibleProperty());
+
+        rightBox.setPadding(new Insets(10, 10, 10, 10));
+        rightBox.setAlignment(Pos.TOP_CENTER);
+        rightBox.setSpacing(10);
+        rightBox.getChildren().addAll(multiplierCanvasBox, histogramBox);
+
+        modsControls.setPadding(new Insets(10, 10, 10, 10));
+        modsControls.setAlignment(Pos.BASELINE_CENTER);
+        modsControls.setSpacing(10);
+        modsControls.getChildren().addAll(mods);
 
         miniCanvasBox.setPadding(new Insets(10, 10, 10, 10));
         miniCanvasBox.setAlignment(Pos.BASELINE_CENTER);
@@ -542,14 +989,14 @@ public class App extends Application {
         loadControls.getChildren().addAll(loadButton, loadText);
 
         controls.setAlignment(Pos.TOP_CENTER);
-        controls.getChildren().addAll(loadControls, offsetControls, paddingControls, areaSizeControls, multiplierSliderBox, multiplierControls);
+        controls.getChildren().addAll(loadControls, modsControls, offsetControls, paddingControls);
 
         main.getChildren().addAll(miniCanvasBox, canvasBox);
 
         border.setTop(controls);
         border.setLeft(imageInfo);
         border.setCenter(main);
-        border.setRight(multiplierCanvasBox);
+        border.setRight(rightBox);
 
         //Настройка и отображение сцены
         scene = new Scene(border, 1500, 1000);
